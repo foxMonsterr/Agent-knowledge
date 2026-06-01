@@ -1,0 +1,95 @@
+spring:
+  ai:
+    openai:
+      qwen:
+        api-base-url: https://dashscope.aliyuncs.com/compatible-mode
+        api-key: ${QWEN_API_KEY:your-qwen-api-key-here}
+        chat:
+          options:
+            model: qwen3.6-plus
+
+      base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY:your-DeepSeek-api-key-here}
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.7
+          max-tokens: 4096
+      # 自动配置路径下的超时（当前项目手工Bean未必完全使用，仅保留兼容）
+      timeout: 60s
+      connection-timeout: 30s
+
+    # Qdrant 向量数据库
+    vectorstore:
+      qdrant:
+        host: ${QDRANT_HOST:localhost}
+        port: 6334
+        collection-name: ${QDRANT_COLLECTION:smart-agent}
+        initialize-schema: true
+
+  # MySQL 数据库（开发阶段）
+  datasource:
+    url: jdbc:mysql://localhost:3306/smart_agent_auth?sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:123456}
+
+  # JPA 配置
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+
+  # Redis 配置
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      timeout: 5000ms
+
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+# JWT 配置
+smart-agent:
+  jwt:
+    secret: ${JWT_SECRET:smartagent-jwt-secret-key-must-be-at-least-256-bits-long-for-hs256}
+    expiration-hours: 24
+  network:
+    connect-timeout: 8s
+    read-timeout: 25s
+  retry:
+    primary:
+      max-attempts: 1
+    fallback:
+      max-attempts: 1
+    backoff-ms: 200
+  models:
+    default-model: deepseek-chat
+    available:
+      deepseek: deepseek-chat
+      deepseek-chat: deepseek-chat
+  rag:
+    vector-store-path: ./data/vectorstore/vector-store.json
+    chunk-size: 120
+    chunk-overlap: 30
+    top-k: 5
+    similarity-threshold: 0.5
+  rate-limit:
+    max-requests-per-minute: 30
+
+# DashScope Embedding 配置（阿里云通义千问）
+dashscope:
+  api-key: ${QWEN_API_KEY:your-dashscope-api-key-here}
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  embedding-model: text-embedding-v4
+
+logging:
+  level:
+    com.chat.myAgent: debug
+    org.springframework.ai: info
+    org.springframework.security: info

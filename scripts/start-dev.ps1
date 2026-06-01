@@ -1,0 +1,6 @@
+Write-Host 'Starting Smart Agent development environment...'
+Write-Host '1) Start backend: mvn spring-boot:run'
+Write-Host '2) Start frontend: cd front; npm install; npm run dev'
+Write-Host '3) Health check: GET /api/v1/health'
+Write-Host '4) Frontend URL: http://localhost:5173'
+Write-Host '5) Backend URL: http://localhost:8080'

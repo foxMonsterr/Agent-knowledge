@@ -1,0 +1,36 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: smart-agent
+  profiles:
+    active: dev
+
+  ai:
+    openai:
+      base-url: ${AI_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: ${AI_MODEL:deepseek-v4-flash}
+          temperature: 0.7
+          max-tokens: 4096
+
+  # 文件上传
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+# Knife4j 文档配置
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+    swagger-model-name: 实体类列表
+
+logging:
+  level:
+    com.chat.myAgent: debug
+    org.springframework.ai: debug
