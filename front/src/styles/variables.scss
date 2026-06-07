@@ -1,4 +1,36 @@
-$primary-color: #409eff;
-$bg-color: #f5f7fb;
-$text-color: #1f2937;
-$border-color: #e5e7eb;
+$primary-color: #0f766e;
+$bg-color: #f3f7f5;
+$text-color: #14201d;
+$border-color: #dce7e2;
+
+:root {
+  --la-accent: #0f766e;
+  --la-accent-strong: #0b5f59;
+  --la-accent-soft: #dff5ef;
+  --la-ink: #14201d;
+  --la-ink-muted: #60716b;
+  --la-bg: #f3f7f5;
+  --la-surface: rgba(255, 255, 255, 0.86);
+  --la-surface-solid: #ffffff;
+  --la-border: #dce7e2;
+  --la-border-strong: #bed3ca;
+  --la-radius-sm: 10px;
+  --la-radius-md: 16px;
+  --la-radius-lg: 22px;
+  --la-shadow-soft: 0 18px 50px rgba(16, 44, 39, 0.08);
+  --la-shadow-lift: 0 24px 70px rgba(16, 44, 39, 0.14);
+
+  --el-color-primary: var(--la-accent);
+  --el-color-primary-dark-2: var(--la-accent-strong);
+  --el-color-primary-light-3: #54a79e;
+  --el-color-primary-light-5: #8ec9c1;
+  --el-color-primary-light-7: #bde3dc;
+  --el-color-primary-light-8: #d2eee9;
+  --el-color-primary-light-9: var(--la-accent-soft);
+  --el-border-radius-base: var(--la-radius-sm);
+  --el-border-color: var(--la-border);
+  --el-border-color-light: #e7efeb;
+  --el-text-color-primary: var(--la-ink);
+  --el-text-color-regular: #334842;
+  --el-text-color-secondary: var(--la-ink-muted);
+}

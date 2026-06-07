@@ -24,6 +24,8 @@ public interface ChatHistoryRepository extends JpaRepository<ChatHistoryEntity, 
      */
     Page<ChatHistoryEntity> findByUsernameOrderByCreatedAtDesc(String username, Pageable pageable);
 
+    boolean existsByConversationIdAndUsername(String conversationId, String username);
+
     /**
      * 查询用户的所有会话ID（去重）
      */

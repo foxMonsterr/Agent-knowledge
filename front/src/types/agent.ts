@@ -10,8 +10,15 @@ export interface AgentRequest {
 export interface AgentResponse {
   conversationId?: string
   reply?: string
+  answer?: string
+  result?: string
+  directAnswer?: string
+  finalAnswer?: string
   model?: string
   agentType?: string
   traceId?: string
   thinking?: string
+  totalTimeMs?: number
+  code?: number
+  message?: string
 }

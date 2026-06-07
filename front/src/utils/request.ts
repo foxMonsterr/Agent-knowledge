@@ -1,4 +1,4 @@
-import axios, { AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
+import axios, { AxiosError, type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
 import { useUserStore } from '@/store/modules/user'
@@ -6,10 +6,18 @@ import type { ApiResponse } from '@/types/auth'
 
 // 统一使用 /api/v1 作为代理前缀，env 文件不配置时兜底使用 /api/v1。
 const envBaseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
-const request: AxiosInstance = axios.create({
+interface DataAxiosInstance extends Omit<AxiosInstance, 'get' | 'post' | 'put' | 'patch' | 'delete'> {
+  get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
+  post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
+  put<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
+  patch<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T>
+  delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
+}
+
+const request = axios.create({
   baseURL: envBaseURL,
   timeout: 30000,
-})
+}) as DataAxiosInstance
 
 request.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {

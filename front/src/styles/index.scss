@@ -7,10 +7,14 @@ body,
   width: 100%;
   height: 100%;
   margin: 0;
-  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans',
-    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  background: #f5f7fb;
-  color: #1f2937;
+  font-family: Aptos, 'HarmonyOS Sans SC', 'Microsoft YaHei UI', 'PingFang SC', 'Segoe UI', sans-serif;
+  background:
+    radial-gradient(circle at 12% -8%, rgba(15, 118, 110, 0.16), transparent 34%),
+    radial-gradient(circle at 88% 8%, rgba(20, 32, 29, 0.08), transparent 30%),
+    var(--la-bg);
+  color: var(--la-ink);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -20,4 +24,68 @@ body,
 a {
   color: inherit;
   text-decoration: none;
+}
+
+button,
+.el-button,
+.el-menu-item,
+.el-sub-menu__title,
+.session-card,
+.doc-item,
+.log-item,
+.message-content {
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.el-button:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.el-card {
+  border-color: rgba(190, 211, 202, 0.72);
+  background: var(--la-surface);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--la-shadow-soft);
+}
+
+.el-card__header {
+  border-bottom-color: rgba(220, 231, 226, 0.82);
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper,
+.el-input-number .el-input__wrapper {
+  border-radius: var(--la-radius-sm);
+  box-shadow: 0 0 0 1px rgba(190, 211, 202, 0.72) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focused {
+  box-shadow:
+    0 0 0 1px var(--la-accent) inset,
+    0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.el-table {
+  --el-table-header-bg-color: #f7fbf9;
+  --el-table-row-hover-bg-color: #edf8f5;
+  border-radius: var(--la-radius-md);
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }

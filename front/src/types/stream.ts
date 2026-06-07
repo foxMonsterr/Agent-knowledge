@@ -17,7 +17,10 @@ export interface StreamMessageLog {
 }
 
 export interface StreamEventPayload {
-  type: 'start' | 'delta' | 'message' | 'done' | 'error' | 'status'
+  type: 'start' | 'delta' | 'message' | 'thought' | 'action' | 'observation' | 'source' | 'final_answer' | 'done' | 'error' | 'status' | 'heartbeat'
   content?: string
+  conversationId?: string
+  traceId?: string
+  data?: any
   raw?: string
 }

@@ -17,6 +17,9 @@
             <el-form-item label="autoExecute">
               <el-switch v-model="form.autoExecute" active-text="自动" inactive-text="仅规划" />
             </el-form-item>
+            <el-form-item label="Memory">
+              <el-switch v-model="form.memoryEnabled" active-text="开启" inactive-text="关闭" />
+            </el-form-item>
           </el-form>
 
           <div class="hint-box">
@@ -54,7 +57,7 @@
               </div>
             </div>
 
-            <div v-if="loading.execute && liveAnswer" class="message-item assistant live">
+            <div v-if="(loading.execute || loading.agent) && liveAnswer" class="message-item assistant live">
               <div class="message-avatar">AI</div>
               <div class="message-content">
                 <div class="message-meta">流式生成中</div>
@@ -80,28 +83,6 @@
               <el-button @click="handleStopStream">停止生成</el-button>
               <el-button @click="handleReset">清空</el-button>
             </div>
-          </div>
-        </el-card>
-
-        <el-card shadow="never" class="panel-card mt16">
-          <template #header>
-            <div class="header">
-              <span>规划 / 执行结果</span>
-              <el-tag type="success">结果面板</el-tag>
-            </div>
-          </template>
-          <div class="response-box">
-            <template v-if="result || liveAnswer">
-              <p><b>conversationId:</b> {{ normalizedSessionId(result) }}</p>
-              <p><b>answer:</b></p>
-              <pre>{{ normalizedPlanningAnswer(result) }}</pre>
-              <p><b>traceId:</b> {{ result?.traceId || '-' }}</p>
-              <p><b>code:</b> {{ result?.code ?? '-' }}</p>
-              <p><b>message:</b> {{ result?.message || '-' }}</p>
-              <p><b>model:</b> {{ result?.model || '-' }}</p>
-              <p><b>totalTimeMs:</b> {{ result?.totalTimeMs ?? '-' }}</p>
-            </template>
-            <el-empty v-else description="暂无结果" />
           </div>
         </el-card>
       </el-col>
@@ -132,22 +113,19 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { PlanningResponse } from '@/types/planning'
-import type { AgentResponse } from '@/types/agent'
-import { normalizeSessionId, normalizeAnswer } from '@/utils/chatNormalize'
-import { useSseStream } from '@/composables/useSseStream'
+import { useConversationStream } from '@/composables/useConversationStream'
 
 const loading = reactive({ execute: false, agent: false })
 const logs = ref<Array<{ id: string; type: 'request' | 'success' | 'error' | 'info'; time: string; content: string }>>([])
 const messages = ref<Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; meta: string }>>([])
-const result = ref<PlanningResponse | AgentResponse | string | null>(null)
 const chatBodyRef = ref<HTMLElement | null>(null)
-const { answer: liveAnswer, clear: clearStream, startFetchStream, stop: stopStream, status: streamStatus } = useSseStream()
+const { answer: liveAnswer, finalContent, conversationId: streamConversationId, clear: clearStream, start: startConversationStream, stop: stopStream, status: streamStatus } = useConversationStream()
 
 const form = reactive({
   conversationId: '',
   task: '',
   autoExecute: true,
+  memoryEnabled: true,
 })
 
 const addLog = (type: 'request' | 'success' | 'error' | 'info', content: string) => {
@@ -181,12 +159,6 @@ const tagType = (type: string) => {
 const statusText = computed(() => (loading.execute || loading.agent || streamStatus.value === 'streaming' || streamStatus.value === 'connecting' ? '处理中' : '空闲'))
 const statusTagType = computed(() => (loading.execute || loading.agent || streamStatus.value === 'streaming' || streamStatus.value === 'connecting' ? 'warning' : 'success'))
 
-const normalizedPlanningAnswer = (value: PlanningResponse | AgentResponse | string | null) => {
-  if (!value) return '-'
-  if (typeof value === 'string') return value
-  return value.finalAnswer || value.directAnswer || value.result || value.reply || value.answer || JSON.stringify(value, null, 2)
-}
-
 const validateTask = () => {
   if (!form.task.trim()) {
     ElMessage.warning('请输入任务内容')
@@ -197,25 +169,23 @@ const validateTask = () => {
 
 const handlePlanAndExecute = async () => {
   if (!validateTask()) return
+  const task = form.task.trim()
   loading.execute = true
   clearStream()
-  appendMessage('user', form.task.trim(), '规划并执行')
+  form.task = ''
+  appendMessage('user', task, '规划并执行')
   addLog('request', '执行任务规划并执行')
   try {
-    await startFetchStream({
-      message: form.task.trim(),
+    await startConversationStream({
+      message: task,
       conversationId: form.conversationId.trim() || undefined,
+      agentType: 'planning',
       mode: 'planning',
-      endpoint: '/planning/stream',
-      query: { autoExecute: form.autoExecute },
+      autoExecute: form.autoExecute,
+      memoryEnabled: form.memoryEnabled,
     })
-    const finalAnswer = liveAnswer.value
-    result.value = {
-      conversationId: form.conversationId.trim() || undefined,
-      finalAnswer,
-      model: 'planning-stream',
-      totalTimeMs: 0,
-    } as PlanningResponse
+    const finalAnswer = finalContent.value || liveAnswer.value
+    if (streamConversationId.value) form.conversationId = streamConversationId.value
     liveAnswer.value = ''
     appendMessage('assistant', finalAnswer || '（空响应）', '规划结果')
     addLog('success', '执行成功')
@@ -229,25 +199,23 @@ const handlePlanAndExecute = async () => {
 
 const handlePlanOnly = async () => {
   if (!validateTask()) return
+  const task = form.task.trim()
   loading.execute = true
   clearStream()
-  appendMessage('user', form.task.trim(), '仅规划')
+  form.task = ''
+  appendMessage('user', task, '仅规划')
   addLog('request', '仅执行规划')
   try {
-    await startFetchStream({
-      message: form.task.trim(),
+    await startConversationStream({
+      message: task,
       conversationId: form.conversationId.trim() || undefined,
-      mode: 'planning',
-      endpoint: '/planning/stream',
-      query: { autoExecute: false },
+      agentType: 'planning',
+      mode: 'planning_only',
+      autoExecute: false,
+      memoryEnabled: form.memoryEnabled,
     })
-    const finalAnswer = liveAnswer.value
-    result.value = {
-      conversationId: form.conversationId.trim() || undefined,
-      finalAnswer,
-      model: 'planning-stream',
-      totalTimeMs: 0,
-    } as PlanningResponse
+    const finalAnswer = finalContent.value || liveAnswer.value
+    if (streamConversationId.value) form.conversationId = streamConversationId.value
     liveAnswer.value = ''
     appendMessage('assistant', finalAnswer || '（空响应）', '规划结果')
     addLog('success', '规划成功')
@@ -261,24 +229,22 @@ const handlePlanOnly = async () => {
 
 const handleAgentChat = async () => {
   if (!validateTask()) return
+  const task = form.task.trim()
   loading.agent = true
   clearStream()
-  appendMessage('user', form.task.trim(), 'Agent 对话')
+  form.task = ''
+  appendMessage('user', task, 'Agent 对话')
   addLog('request', '调用全能 Agent 入口')
   try {
-    await startFetchStream({
-      message: form.task.trim(),
+    await startConversationStream({
+      message: task,
       conversationId: form.conversationId.trim() || undefined,
-      mode: 'agent',
-      endpoint: '/stream/chat/tools',
+      agentType: 'full',
+      mode: 'chat',
+      memoryEnabled: form.memoryEnabled,
     })
-    const finalAnswer = liveAnswer.value
-    result.value = {
-      conversationId: form.conversationId.trim() || undefined,
-      finalAnswer,
-      model: 'agent-stream',
-      totalTimeMs: 0,
-    } as AgentResponse
+    const finalAnswer = finalContent.value || liveAnswer.value
+    if (streamConversationId.value) form.conversationId = streamConversationId.value
     liveAnswer.value = ''
     appendMessage('assistant', finalAnswer || '（空响应）', 'Agent 回复')
     addLog('success', 'Agent 调用成功')
@@ -299,7 +265,7 @@ const handleReset = () => {
   form.conversationId = ''
   form.task = ''
   form.autoExecute = true
-  result.value = null
+  form.memoryEnabled = true
   messages.value = []
   clearStream()
   addLog('info', '已清空规划会话')

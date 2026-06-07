@@ -89,6 +89,13 @@
             <artifactId>spring-ai-markdown-document-reader</artifactId>
         </dependency>
 
+        <!-- Word docx 解析支持 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+
         <!-- 阶段5: 简单前端页面（Thymeleaf 或直接 static 资源） -->
         <!--
         <dependency>
@@ -156,6 +163,12 @@
             <version>4.5.0</version>
         </dependency>
 
+
+        <!-- AOP 切面支持 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
 
         <!-- 测试  -->
         <dependency>

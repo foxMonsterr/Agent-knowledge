@@ -11,7 +11,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 权限信息接口
@@ -31,10 +30,11 @@ public class PermissionController {
         List<String> menus;
         List<String> actions;
         if ("ROLE_ADMIN".equals(role)) {
-            menus = List.of("home", "demo", "deploy", "dashboard", "chat", "agent", "knowledge", "planning", "stream", "session", "monitor", "audit", "docs", "admin");
+            menus = List.of("home", "chat", "notes", "knowledge", "quiz", "flashcards", "graph", "stats", "session",
+                    "demo", "deploy", "release", "dashboard", "agent", "planning", "stream", "monitor", "audit", "docs", "admin");
             actions = List.of("knowledge:upload", "knowledge:delete", "monitor:view", "session:delete", "user:manage", "audit:view", "deploy:view");
         } else {
-            menus = List.of("home", "demo", "deploy", "dashboard", "chat", "agent", "knowledge", "planning", "stream", "session", "docs");
+            menus = List.of("home", "chat", "notes", "knowledge", "quiz", "flashcards", "graph", "stats", "session", "docs");
             actions = List.of("session:view", "deploy:view");
         }
 

@@ -21,6 +21,9 @@ spring:
 
     # Qdrant 向量数据库
     vectorstore:
+      # 本地开发默认使用 SimpleVectorStore，避免未启动 Qdrant 时应用上下文失败。
+      # 如需启用 Qdrant，设置环境变量 VECTOR_STORE_TYPE=qdrant。
+      type: ${VECTOR_STORE_TYPE:simple}
       qdrant:
         host: ${QDRANT_HOST:localhost}
         port: 6334

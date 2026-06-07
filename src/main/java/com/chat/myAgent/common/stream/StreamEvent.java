@@ -12,6 +12,10 @@ public record StreamEvent(String type, String content) {
     }
 
     private String escape(String text) {
-        return text == null ? "" : text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ");
+        return text == null ? "" : text
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
     }
 }

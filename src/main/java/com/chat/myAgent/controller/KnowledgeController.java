@@ -2,9 +2,11 @@ package com.chat.myAgent.controller;
 
 import com.chat.myAgent.agent.RagAgent;
 import com.chat.myAgent.common.result.R;
+import com.chat.myAgent.conversation.dto.ConversationRunRequest;
+import com.chat.myAgent.conversation.dto.ConversationRunResponse;
+import com.chat.myAgent.conversation.service.ConversationAgentRouter;
 import com.chat.myAgent.model.dto.KnowledgeRequest;
 import com.chat.myAgent.model.vo.DocumentVO;
-import com.chat.myAgent.model.vo.KnowledgeResponse;
 import com.chat.myAgent.rag.DocumentService;
 import com.chat.myAgent.rag.DocumentService.DocumentMeta;
 import io.swagger.v3.oas.annotations.Operation;
@@ -29,8 +31,14 @@ import java.util.stream.Collectors;
  * 1. 文档管理：上传、列表、删除
  * 2. RAG问答：基于知识库回答问题
  * 3. 调试工具：纯检索（不生成回答）
+ *
+ * @deprecated RAG 问答部分已废弃，请使用统一的会话接口。
+ * 迁移路径：使用 {@code POST /api/v1/conversations/chat}，设置 agentType="rag"。
+ * 流式输出使用 {@code GET /api/v1/conversations/chat/stream}，设置 agentType="rag"。
+ * 文档管理接口（upload/load-directory/documents）暂保留于此。
  */
-@Tag(name = "知识库管理", description = "文档上传/加载/删除 + RAG知识库问答 + 检索调试")
+@Deprecated
+@Tag(name = "知识库管理", description = "文档上传/加载/删除 + RAG知识库问答 + 检索调试（RAG问答已废弃，请使用 /api/v1/conversations）")
 @Slf4j
 @RestController
 @RequestMapping("/api/v1/knowledge")
@@ -39,6 +47,7 @@ public class KnowledgeController {
 
     private final DocumentService documentService;
     private final RagAgent ragAgent;
+    private final ConversationAgentRouter conversationAgentRouter;
 
     // ==================== 文档管理接口 ====================
 
@@ -159,12 +168,8 @@ public class KnowledgeController {
      */
     @Operation(summary = "知识库问答（自动RAG）", description = "使用QuestionAnswerAdvisor自动完成检索和回答，支持多轮追问")
     @PostMapping("/ask")
-    public R<KnowledgeResponse> ask(@Valid @RequestBody KnowledgeRequest request) {
-        KnowledgeResponse response = ragAgent.ask(
-                request.getQuestion(),
-                request.getConversationId()
-        );
-        return R.ok(response);
+    public R<ConversationRunResponse> ask(@Valid @RequestBody KnowledgeRequest request) {
+        return R.ok(conversationAgentRouter.chat(toRunRequest(request, "rag")));
     }
 
     /**
@@ -175,12 +180,8 @@ public class KnowledgeController {
      */
     @Operation(summary = "知识库问答（手动RAG）", description = "手动控制检索和拼接过程，可以看到更清晰的RAG流程")
     @PostMapping("/ask/manual")
-    public R<KnowledgeResponse> askManual(@Valid @RequestBody KnowledgeRequest request) {
-        KnowledgeResponse response = ragAgent.askManual(
-                request.getQuestion(),
-                request.getConversationId()
-        );
-        return R.ok(response);
+    public R<ConversationRunResponse> askManual(@Valid @RequestBody KnowledgeRequest request) {
+        return R.ok(conversationAgentRouter.chat(toRunRequest(request, "rag_manual")));
     }
 
     // ==================== RAG 流式问答 ====================
@@ -192,10 +193,20 @@ public class KnowledgeController {
     @Operation(summary = "知识库流式问答（SSE）", description = "流式返回基于知识库的回答，支持手动/自动RAG模式")
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> askStream(
-            @Parameter(description = "问题", required = true) @RequestParam("message") String message,
+            @Parameter(description = "问题") @RequestParam(required = false) String message,
+            @Parameter(description = "兼容旧参数：问题") @RequestParam(required = false) String question,
             @Parameter(description = "会话ID") @RequestParam(required = false) String conversationId,
-            @Parameter(description = "是否手动模式") @RequestParam(defaultValue = "false") boolean manual) {
-        return ragAgent.askStream(message, conversationId, manual);
+            @Parameter(description = "是否手动模式") @RequestParam(defaultValue = "false") boolean manual,
+            @RequestParam(required = false, defaultValue = "true") boolean memoryEnabled) {
+        String resolvedMessage = resolveRequiredText(message, question, "message/question");
+        ConversationRunRequest request = new ConversationRunRequest();
+        request.setMessage(resolvedMessage);
+        request.setConversationId(conversationId);
+        request.setAgentType("rag");
+        request.setMode(manual ? "rag_manual" : "rag");
+        request.setMemoryEnabled(memoryEnabled);
+        request.setStream(true);
+        return conversationAgentRouter.stream(request);
     }
 
     // ==================== 调试接口 ====================
@@ -238,5 +249,25 @@ public class KnowledgeController {
         if (bytes < 1024) return bytes + " B";
         if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
         return String.format("%.1f MB", bytes / (1024.0 * 1024));
+    }
+
+    private String resolveRequiredText(String primary, String fallback, String fieldName) {
+        String resolved = primary != null && !primary.isBlank() ? primary : fallback;
+        if (resolved == null || resolved.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " 不能为空");
+        }
+        return resolved;
+    }
+
+    private ConversationRunRequest toRunRequest(KnowledgeRequest request, String mode) {
+        ConversationRunRequest runRequest = new ConversationRunRequest();
+        runRequest.setConversationId(request.getConversationId());
+        runRequest.setMessage(request.getQuestion());
+        runRequest.setAgentType("rag");
+        runRequest.setMode(mode);
+        runRequest.setTopK(request.getTopK());
+        runRequest.setSimilarityThreshold(request.getSimilarityThreshold());
+        runRequest.setMemoryEnabled(request.getMemoryEnabled());
+        return runRequest;
     }
 }

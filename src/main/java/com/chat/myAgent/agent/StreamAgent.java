@@ -66,23 +66,50 @@ public class StreamAgent {
         this.dbQueryTool = dbQueryTool;
     }
 
-    /**
-     * 基础流式对话（无工具）
-     */
     public Flux<String> streamChat(String message, String conversationId) {
+        return streamChat(message, conversationId, true);
+    }
+
+    public Flux<String> streamChat(String message, String conversationId, boolean memoryEnabled) {
+        return doStream(message, conversationId, memoryEnabled, false);
+    }
+
+    public Flux<String> streamChatWithTools(String message, String conversationId) {
+        return streamChatWithTools(message, conversationId, true);
+    }
+
+    public Flux<String> streamChatWithTools(String message, String conversationId, boolean memoryEnabled) {
+        return doStream(message, conversationId, memoryEnabled, true);
+    }
+
+    private Flux<String> doStream(String message, String conversationId, boolean memoryEnabled, boolean withTools) {
         final String resolvedId = resolveConversationId(conversationId);
+        String label = withTools ? "stream-tools" : "stream";
+        String startMsg = withTools ? "开始工具流式对话" : "开始流式对话";
         log.debug("StreamAgent [{}] 流式对话: {}", resolvedId, message);
         String username = getCurrentUsername();
         StringBuilder fullResponse = new StringBuilder();
         try {
-            Flux<String> content = fullAgentClient.prompt()
-                    .user(message)
-                    .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, resolvedId))
-                    .stream()
-                    .content();
+            ChatClient.ChatClientRequestSpec prompt;
+            if (memoryEnabled) {
+                prompt = fullAgentClient.prompt().user(message)
+                        .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, resolvedId));
+            } else {
+                prompt = baseChatClient.prompt().user(message);
+                if (withTools) {
+                    prompt = prompt.system(fullAgentPrompt);
+                } else {
+                    prompt = prompt.system("请直接、简洁、准确地回答用户，不要输出思考过程。");
+                }
+            }
+            if (withTools) {
+                prompt = prompt.tools(dateTimeTool, calculatorTool, translateTool, docParseTool, dbQueryTool);
+            }
+            Flux<String> content = prompt.stream().content();
 
+            String agentType = memoryEnabled ? label + "-memory" : label;
             return Flux.concat(
-                    Flux.just(StreamEvent.start("开始流式对话").toJson()),
+                    Flux.just(StreamEvent.start(startMsg).toJson()),
                     content.map(chunk -> {
                         fullResponse.append(chunk);
                         return StreamEvent.delta(chunk).toJson();
@@ -90,52 +117,13 @@ public class StreamAgent {
                     Flux.just(StreamEvent.done("完成").toJson())
             ).doFinally(signalType -> {
                 String status = signalType == reactor.core.publisher.SignalType.ON_COMPLETE ? "SUCCESS" : "FAILED";
-                auditService.saveChatHistory(resolvedId, username, "user", message, "stream", modelConfig.getPrimaryModel(), null, null, 0L);
-                auditService.saveChatHistory(resolvedId, username, "assistant", fullResponse.toString(), "stream", modelConfig.getPrimaryModel(), null, null, 0L);
-                auditService.saveAgentInvocation(resolvedId, "stream", modelConfig.getPrimaryModel(), message, fullResponse.toString(), null, status, 0L);
+                auditService.saveChatHistory(resolvedId, username, "user", message, agentType, modelConfig.getPrimaryModel(), null, null, 0L);
+                auditService.saveChatHistory(resolvedId, username, "assistant", fullResponse.toString(), agentType, modelConfig.getPrimaryModel(), null, null, 0L);
+                auditService.saveAgentInvocation(resolvedId, agentType, modelConfig.getPrimaryModel(), message, fullResponse.toString(), null, status, 0L);
             });
         } catch (Exception ex) {
-            log.error("StreamAgent streamChat failed", ex);
+            log.error("StreamAgent doStream({}) failed", label, ex);
             return Flux.just(StreamEvent.error("流式对话失败: " + ex.getMessage()).toJson());
-        }
-    }
-
-    /**
-     * 带工具的流式对话
-     *
-     * 注意：部分模型的Function Calling在流式模式下行为可能不同
-     * 工具调用阶段不会产生流式输出，只有最终回答才会流式返回
-     */
-    public Flux<String> streamChatWithTools(String message, String conversationId) {
-        final String resolvedId = resolveConversationId(conversationId);
-        log.debug("StreamAgent(Tools) [{}] 流式对话: {}", resolvedId, message);
-        String username = getCurrentUsername();
-        StringBuilder fullResponse = new StringBuilder();
-        try {
-            Flux<String> content = baseChatClient.prompt()
-                    .system(fullAgentPrompt)
-                    .user(message)
-                    .tools(dateTimeTool, calculatorTool, translateTool, docParseTool, dbQueryTool)
-                    .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, resolvedId))
-                    .stream()
-                    .content();
-
-            return Flux.concat(
-                    Flux.just(StreamEvent.start("开始工具流式对话").toJson()),
-                    content.map(chunk -> {
-                        fullResponse.append(chunk);
-                        return StreamEvent.delta(chunk).toJson();
-                    }),
-                    Flux.just(StreamEvent.done("完成").toJson())
-            ).doFinally(signalType -> {
-                String status = signalType == reactor.core.publisher.SignalType.ON_COMPLETE ? "SUCCESS" : "FAILED";
-                auditService.saveChatHistory(resolvedId, username, "user", message, "stream-tools", modelConfig.getPrimaryModel(), null, null, 0L);
-                auditService.saveChatHistory(resolvedId, username, "assistant", fullResponse.toString(), "stream-tools", modelConfig.getPrimaryModel(), null, null, 0L);
-                auditService.saveAgentInvocation(resolvedId, "stream-tools", modelConfig.getPrimaryModel(), message, fullResponse.toString(), null, status, 0L);
-            });
-        } catch (Exception ex) {
-            log.error("StreamAgent streamChatWithTools failed", ex);
-            return Flux.just(StreamEvent.error("工具流式对话失败: " + ex.getMessage()).toJson());
         }
     }
 

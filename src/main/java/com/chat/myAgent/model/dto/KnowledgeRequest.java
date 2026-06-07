@@ -29,4 +29,9 @@ public class KnowledgeRequest {
      * 相似度阈值（可选，默认0.5）
      */
     private Double similarityThreshold;
+
+    /**
+     * 是否启用会话记忆，默认开启
+     */
+    private Boolean memoryEnabled = true;
 }

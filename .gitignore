@@ -1,4 +1,8 @@
 target/
+front/node_modules/
+front/dist/
+front/vite-dev.log
+*.log
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

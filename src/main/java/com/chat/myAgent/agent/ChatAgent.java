@@ -1,5 +1,6 @@
 package com.chat.myAgent.agent;
 
+import com.chat.myAgent.common.audit.Auditable;
 import com.chat.myAgent.common.context.TraceContext;
 import com.chat.myAgent.common.stream.StreamEvent;
 import com.chat.myAgent.config.ModelConfig;
@@ -52,13 +53,20 @@ public class ChatAgent {
     public Flux<String> memoryChatStream(ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
         String userMessage = request.getMessage();
+        boolean memoryEnabled = memoryEnabled(request.getMemoryEnabled());
         StringBuilder replyBuffer = new StringBuilder();
 
         try {
-            Flux<String> contentFlux = memoryChatClient.prompt()
+            Flux<String> contentFlux = memoryEnabled
+                    ? memoryChatClient.prompt()
                     .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
                     .user(userMessage)
                     .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, conversationId))
+                    .stream()
+                    .content()
+                    : baseChatClient.prompt()
+                    .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
+                    .user(userMessage)
                     .stream()
                     .content();
 
@@ -73,10 +81,11 @@ public class ChatAgent {
                             .concatWith(Flux.just(StreamEvent.done("完成").toJson()))
                             .doFinally(signalType -> {
                                 String reply = replyBuffer.toString();
-                                auditService.saveChatHistory(conversationId, username, "user", userMessage, "memory", modelConfig.getPrimaryModel(), null, null, 0L);
+                                String agentType = memoryEnabled ? "memory" : "chat";
+                                auditService.saveChatHistory(conversationId, username, "user", userMessage, agentType, modelConfig.getPrimaryModel(), null, null, 0L);
                                 if (!reply.isBlank()) {
-                                    auditService.saveChatHistory(conversationId, username, "assistant", reply, "memory", modelConfig.getPrimaryModel(), null, null, 0L);
-                                    auditService.saveAgentInvocation(conversationId, "memory-stream", modelConfig.getPrimaryModel(), userMessage, reply, null, "SUCCESS", 0L);
+                                    auditService.saveChatHistory(conversationId, username, "assistant", reply, agentType, modelConfig.getPrimaryModel(), null, null, 0L);
+                                    auditService.saveAgentInvocation(conversationId, agentType + "-stream", modelConfig.getPrimaryModel(), userMessage, reply, null, "SUCCESS", 0L);
                                 }
                             })
             );
@@ -85,33 +94,36 @@ public class ChatAgent {
         }
     }
 
+    @Auditable(agentType = "chat")
     public ChatResponse chat(ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
         String userMessage = request.getMessage();
+        boolean memoryEnabled = memoryEnabled(request.getMemoryEnabled());
         try {
-            String username = getCurrentUsername();
-            String reply = memoryChatClient.prompt()
+            String reply = memoryEnabled
+                    ? memoryChatClient.prompt()
                     .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
                     .user(userMessage)
                     .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, conversationId))
                     .call()
+                    .content()
+                    : baseChatClient.prompt()
+                    .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
+                    .user(userMessage)
+                    .call()
                     .content();
             int historySize = getHistorySize(conversationId);
-            ChatResponse response = buildResponse(conversationId, reply, modelConfig.getPrimaryModel(), historySize);
-            auditService.saveChatHistory(conversationId, username, "user", userMessage, "memory", modelConfig.getPrimaryModel(), null, null, 0L);
-            auditService.saveChatHistory(conversationId, username, "assistant", response.getReply(), "memory", modelConfig.getPrimaryModel(), null, null, 0L);
-            auditService.saveAgentInvocation(conversationId, "memory", modelConfig.getPrimaryModel(), userMessage, response.getReply(), null, "SUCCESS", 0L);
-            return response;
+            return buildResponse(conversationId, reply, modelConfig.getPrimaryModel(), historySize);
         } catch (Exception primaryEx) {
-            return fallbackMemoryChat(conversationId, userMessage, primaryEx);
+            return fallbackMemoryChat(conversationId, userMessage, memoryEnabled, primaryEx);
         }
     }
 
+    @Auditable(agentType = "expert")
     public ChatResponse expertChat(ChatRequest request, String role, String level) {
         String conversationId = resolveConversationId(request.getConversationId());
         String userMessage = request.getMessage();
         try {
-            String username = getCurrentUsername();
             String reply = baseChatClient.prompt()
                     .system(s -> s.text(expertPromptResource).param("role", role).param("level", level))
                     .user(userMessage)
@@ -119,11 +131,7 @@ public class ChatAgent {
                     .call()
                     .content();
             int historySize = getHistorySize(conversationId);
-            ChatResponse response = buildResponse(conversationId, reply, modelConfig.getPrimaryModel(), historySize);
-            auditService.saveChatHistory(conversationId, username, "user", userMessage, "expert", modelConfig.getPrimaryModel(), null, null, 0L);
-            auditService.saveChatHistory(conversationId, username, "assistant", response.getReply(), "expert", modelConfig.getPrimaryModel(), null, null, 0L);
-            auditService.saveAgentInvocation(conversationId, "expert", modelConfig.getPrimaryModel(), userMessage, response.getReply(), null, "SUCCESS", 0L);
-            return response;
+            return buildResponse(conversationId, reply, modelConfig.getPrimaryModel(), historySize);
         } catch (Exception primaryEx) {
             return fallbackExpertChat(conversationId, userMessage, role, level, primaryEx);
         }
@@ -132,12 +140,18 @@ public class ChatAgent {
     public List<Message> getHistory(String conversationId) { return chatMemory.get(conversationId); }
     public void clearMemory(String conversationId) { chatMemory.clear(conversationId); }
 
-    private ChatResponse fallbackMemoryChat(String conversationId, String userMessage, Exception primaryEx) {
+    private ChatResponse fallbackMemoryChat(String conversationId, String userMessage, boolean memoryEnabled, Exception primaryEx) {
         try {
-            String reply = fallbackChatClient.prompt()
+            String reply = memoryEnabled
+                    ? fallbackChatClient.prompt()
                     .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
                     .user(userMessage)
                     .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, conversationId))
+                    .call()
+                    .content()
+                    : fallbackChatClient.prompt()
+                    .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
+                    .user(userMessage)
                     .call()
                     .content();
             int historySize = getHistorySize(conversationId);
@@ -190,6 +204,10 @@ public class ChatAgent {
     private String resolveConversationId(String conversationId) {
         if (conversationId == null || conversationId.isBlank()) return UUID.randomUUID().toString().replace("-", "");
         return conversationId;
+    }
+
+    private boolean memoryEnabled(Boolean value) {
+        return value == null || value;
     }
 
 }

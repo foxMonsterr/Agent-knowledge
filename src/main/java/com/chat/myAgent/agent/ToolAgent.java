@@ -1,10 +1,10 @@
 package com.chat.myAgent.agent;
 
+import com.chat.myAgent.common.audit.Auditable;
 import com.chat.myAgent.common.context.TraceContext;
 import com.chat.myAgent.model.dto.AgentRequest;
 import com.chat.myAgent.model.vo.AgentResponse;
 import com.chat.myAgent.config.ModelConfig;
-import com.chat.myAgent.service.AuditService;
 import com.chat.myAgent.tool.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -35,6 +35,7 @@ import java.util.UUID;
 public class ToolAgent {
 
     private final ChatClient baseChatClient;
+    private final ChatClient toolChatClient;
     private final ChatMemory chatMemory;
 
     // 注入所有工具
@@ -43,7 +44,11 @@ public class ToolAgent {
     private final TranslateTool translateTool;
     private final DocParseTool docParseTool;
     private final DbQueryTool dbQueryTool;
-    private final AuditService auditService;
+    private final TextTool textTool;
+    private final JsonTool jsonTool;
+    private final CollectionTool collectionTool;
+    private final RegexTool regexTool;
+    private final SystemInfoTool systemInfoTool;
     private final ModelConfig modelConfig;
 
     @Value("classpath:prompts/tool-agent-system.st")
@@ -51,22 +56,32 @@ public class ToolAgent {
 
     public ToolAgent(
             @Qualifier("baseChatClient") ChatClient baseChatClient,
+            @Qualifier("toolChatClient") ChatClient toolChatClient,
             ChatMemory chatMemory,
             DateTimeTool dateTimeTool,
             CalculatorTool calculatorTool,
             TranslateTool translateTool,
             DocParseTool docParseTool,
             DbQueryTool dbQueryTool,
-            AuditService auditService,
+            TextTool textTool,
+            JsonTool jsonTool,
+            CollectionTool collectionTool,
+            RegexTool regexTool,
+            SystemInfoTool systemInfoTool,
             ModelConfig modelConfig) {
         this.baseChatClient = baseChatClient;
+        this.toolChatClient = toolChatClient;
         this.chatMemory = chatMemory;
         this.dateTimeTool = dateTimeTool;
         this.calculatorTool = calculatorTool;
         this.translateTool = translateTool;
         this.docParseTool = docParseTool;
         this.dbQueryTool = dbQueryTool;
-        this.auditService = auditService;
+        this.textTool = textTool;
+        this.jsonTool = jsonTool;
+        this.collectionTool = collectionTool;
+        this.regexTool = regexTool;
+        this.systemInfoTool = systemInfoTool;
         this.modelConfig = modelConfig;
     }
 
@@ -75,29 +90,35 @@ public class ToolAgent {
      *
      * 适用场景：单次工具调用，不需要上下文
      */
+    @Auditable(agentType = "tool")
     public AgentResponse chat(AgentRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
+        boolean memoryEnabled = memoryEnabled(request.getMemoryEnabled());
 
         log.debug("ToolAgent [{}]: {}", conversationId, request.getMessage());
 
-        String reply = baseChatClient.prompt()
+        ChatClient client = memoryEnabled ? toolChatClient : baseChatClient;
+        String reply = client.prompt()
                 .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
                 .user(request.getMessage())
-                .tools(dateTimeTool, calculatorTool, translateTool, docParseTool, dbQueryTool)
+                .tools(allTools())
+                .advisors(advisor -> {
+                    if (memoryEnabled) {
+                        advisor.param(ChatMemory.CONVERSATION_ID, conversationId);
+                    }
+                })
                 .call()
                 .content();
 
         log.debug("ToolAgent [{}] 回复: {}", conversationId, reply);
 
-        AgentResponse response = AgentResponse.builder()
+        return AgentResponse.builder()
                 .conversationId(conversationId)
                 .reply(reply)
                 .traceId(TraceContext.getTraceId())
                 .model(modelConfig.getPrimaryModel())
-                .agentType("tool")
+                .agentType(memoryEnabled ? "tool-memory" : "tool")
                 .build();
-        auditService.saveAgentInvocation(conversationId, "tool", modelConfig.getPrimaryModel(), request.getMessage(), response.getReply(), null, "SUCCESS", 0L);
-        return response;
     }
 
     /**
@@ -108,15 +129,17 @@ public class ToolAgent {
      *   用户: "查一下技术部有哪些人"
      *   用户: "他们的平均薪资是多少" → 需要记住"技术部"这个上下文
      */
+    @Auditable(agentType = "tool-memory")
     public AgentResponse chatWithMemory(AgentRequest request) {
+        request.setMemoryEnabled(true);
         String conversationId = resolveConversationId(request.getConversationId());
 
         log.debug("ToolAgent(Memory) [{}]: {}", conversationId, request.getMessage());
 
-        String reply = baseChatClient.prompt()
+        String reply = toolChatClient.prompt()
                 .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
                 .user(request.getMessage())
-                .tools(dateTimeTool, calculatorTool, translateTool, docParseTool, dbQueryTool)
+                .tools(allTools())
                 .advisors(advisor -> advisor
                         .param(ChatMemory.CONVERSATION_ID, conversationId)
                 )
@@ -125,15 +148,13 @@ public class ToolAgent {
 
         log.debug("ToolAgent(Memory) [{}] 回复: {}", conversationId, reply);
 
-        AgentResponse response = AgentResponse.builder()
+        return AgentResponse.builder()
                 .conversationId(conversationId)
                 .reply(reply)
                 .traceId(TraceContext.getTraceId())
                 .model(modelConfig.getPrimaryModel())
                 .agentType("tool-memory")
                 .build();
-        auditService.saveAgentInvocation(conversationId, "tool-memory", modelConfig.getPrimaryModel(), request.getMessage(), response.getReply(), null, "SUCCESS", 0L);
-        return response;
     }
 
     /**
@@ -142,30 +163,35 @@ public class ToolAgent {
      * 适用场景：只想让AI使用特定工具，不暴露其他工具
      * 例如：只启用计算器和时间工具
      */
+    @Auditable(agentType = "tool-specific")
     public AgentResponse chatWithSpecificTools(AgentRequest request, String... toolNames) {
         String conversationId = resolveConversationId(request.getConversationId());
+        boolean memoryEnabled = memoryEnabled(request.getMemoryEnabled());
 
         log.debug("ToolAgent(Specific) [{}] tools={}: {}", conversationId, toolNames, request.getMessage());
 
-        // 根据工具名称选择要注册的工具
         Object[] selectedTools = selectTools(toolNames);
 
-        String reply = baseChatClient.prompt()
+        ChatClient client = memoryEnabled ? toolChatClient : baseChatClient;
+        String reply = client.prompt()
                 .system("请直接、简洁、准确地回答用户，不要输出思考过程。")
                 .user(request.getMessage())
                 .tools(selectedTools)
+                .advisors(advisor -> {
+                    if (memoryEnabled) {
+                        advisor.param(ChatMemory.CONVERSATION_ID, conversationId);
+                    }
+                })
                 .call()
                 .content();
 
-        AgentResponse response = AgentResponse.builder()
+        return AgentResponse.builder()
                 .conversationId(conversationId)
                 .reply(reply)
                 .traceId(TraceContext.getTraceId())
                 .model(modelConfig.getPrimaryModel())
-                .agentType("tool-specific")
+                .agentType(memoryEnabled ? "tool-specific-memory" : "tool-specific")
                 .build();
-        auditService.saveAgentInvocation(conversationId, "tool-specific", modelConfig.getPrimaryModel(), request.getMessage(), response.getReply(), null, "SUCCESS", 0L);
-        return response;
     }
 
     /**
@@ -180,9 +206,29 @@ public class ToolAgent {
                 case "translate" -> tools.add(translateTool);
                 case "doc", "document" -> tools.add(docParseTool);
                 case "db", "database" -> tools.add(dbQueryTool);
+                case "text" -> tools.add(textTool);
+                case "json" -> tools.add(jsonTool);
+                case "collection", "list" -> tools.add(collectionTool);
+                case "regex" -> tools.add(regexTool);
+                case "system", "capability" -> tools.add(systemInfoTool);
             }
         }
         return tools.toArray();
+    }
+
+    private Object[] allTools() {
+        return new Object[]{
+                dateTimeTool,
+                calculatorTool,
+                translateTool,
+                docParseTool,
+                dbQueryTool,
+                textTool,
+                jsonTool,
+                collectionTool,
+                regexTool,
+                systemInfoTool
+        };
     }
 
     private String resolveConversationId(String conversationId) {
@@ -191,4 +237,9 @@ public class ToolAgent {
         }
         return conversationId;
     }
+
+    private boolean memoryEnabled(Boolean value) {
+        return value == null || value;
+    }
+
 }

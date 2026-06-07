@@ -25,7 +25,7 @@ public class AgentRequest {
     /**
      * 指定启用的工具列表（可选）
      * 不传则启用所有工具
-     * 可选值：datetime, calculator, translate, doc, db
+     * 可选值：datetime, calculator, translate, doc, db, text, json, collection, list, regex, system, capability
      */
     private List<String> tools;
 
@@ -33,4 +33,9 @@ public class AgentRequest {
      * 是否开启思考模式
      */
     private Boolean thinkingMode = false;
+
+    /**
+     * 是否启用会话记忆，默认开启
+     */
+    private Boolean memoryEnabled = true;
 }

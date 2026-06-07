@@ -21,7 +21,8 @@
         <el-form-item>
           <el-space wrap>
             <el-button type="primary" :loading="loading.history" @click="handleLoadHistory">加载历史</el-button>
-            <el-button type="danger" plain :loading="loading.clear" @click="handleClearSession">清除会话</el-button>
+            <el-button plain :loading="loading.memory" @click="handleClearMemory">清除 Memory</el-button>
+            <el-button type="danger" plain :loading="loading.clear" @click="handleClearSession">删除会话</el-button>
           </el-space>
         </el-form-item>
       </el-form>
@@ -93,10 +94,11 @@
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { clearSession, getSessionHistory } from '@/api/session'
+import { clearConversationMemory } from '@/api/conversation'
 import { getMonitorConversation, getMonitorHistory, getMonitorSessions, getMonitorStats } from '@/api/monitor'
 import type { SessionHistoryItem } from '@/types/session'
 
-const loading = reactive({ history: false, clear: false, stats: false, monitorHistory: false, monitorSessions: false, monitorConversation: false })
+const loading = reactive({ history: false, clear: false, memory: false, stats: false, monitorHistory: false, monitorSessions: false, monitorConversation: false })
 const form = reactive({ conversationId: '' })
 const monitorForm = reactive({ username: '', page: 0, size: 20 })
 const history = ref<SessionHistoryItem[]>([])
@@ -126,6 +128,20 @@ const handleLoadHistory = async () => {
   }
 }
 
+const handleClearMemory = async () => {
+  if (!form.conversationId.trim()) {
+    ElMessage.warning('请输入 conversationId')
+    return
+  }
+  loading.memory = true
+  try {
+    await clearConversationMemory(form.conversationId.trim())
+    setMessage('Memory 已清除，历史消息仍保留', 'success')
+  } finally {
+    loading.memory = false
+  }
+}
+
 const handleClearSession = async () => {
   if (!form.conversationId.trim()) {
     ElMessage.warning('请输入 conversationId')
@@ -135,7 +151,7 @@ const handleClearSession = async () => {
   try {
     await clearSession(form.conversationId.trim())
     history.value = []
-    setMessage('会话已清除', 'success')
+    setMessage('会话已删除', 'success')
   } finally {
     loading.clear = false
   }

@@ -1,12 +1,14 @@
 package com.chat.myAgent.agent;
 
+import com.chat.myAgent.agent.planning.PlanningResponseBuilder;
+import com.chat.myAgent.agent.planning.PlanningStepExecutor;
+import com.chat.myAgent.common.audit.Auditable;
 import com.chat.myAgent.common.context.TraceContext;
 import com.chat.myAgent.common.stream.StreamEvent;
 import com.chat.myAgent.config.ModelConfig;
 import com.chat.myAgent.model.vo.PlanningResponse;
 import com.chat.myAgent.model.vo.StepResult;
 import com.chat.myAgent.service.AuditService;
-import com.chat.myAgent.tool.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -15,6 +17,7 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
@@ -27,74 +30,121 @@ import java.util.UUID;
 public class PlanningAgent {
 
     private final ChatClient baseChatClient;
-    private final ChatClient fullAgentClient;
+    private final ChatClient memoryChatClient;
     private final ObjectMapper objectMapper;
     private final ModelConfig modelConfig;
-    private final DateTimeTool dateTimeTool;
-    private final CalculatorTool calculatorTool;
-    private final TranslateTool translateTool;
-    private final DocParseTool docParseTool;
-    private final DbQueryTool dbQueryTool;
     private final AuditService auditService;
+    private final PlanningStepExecutor stepExecutor;
+    private final PlanningResponseBuilder responseBuilder;
 
     @Value("classpath:prompts/planning-system.st")
     private Resource planningSystemPrompt;
 
     public PlanningAgent(
             @Qualifier("baseChatClient") ChatClient baseChatClient,
-            @Qualifier("fullAgentClient") ChatClient fullAgentClient,
+            @Qualifier("memoryChatClient") ChatClient memoryChatClient,
             ModelConfig modelConfig,
-            DateTimeTool dateTimeTool,
-            CalculatorTool calculatorTool,
-            TranslateTool translateTool,
-            DocParseTool docParseTool,
-            DbQueryTool dbQueryTool,
-            AuditService auditService) {
+            AuditService auditService,
+            PlanningStepExecutor stepExecutor,
+            PlanningResponseBuilder responseBuilder) {
         this.baseChatClient = baseChatClient;
-        this.fullAgentClient = fullAgentClient;
+        this.memoryChatClient = memoryChatClient;
         this.objectMapper = new ObjectMapper();
         this.objectMapper.findAndRegisterModules();
         this.modelConfig = modelConfig;
-        this.dateTimeTool = dateTimeTool;
-        this.calculatorTool = calculatorTool;
-        this.translateTool = translateTool;
-        this.docParseTool = docParseTool;
-        this.dbQueryTool = dbQueryTool;
         this.auditService = auditService;
+        this.stepExecutor = stepExecutor;
+        this.responseBuilder = responseBuilder;
     }
 
     public Flux<String> planStream(String task, String conversationId, boolean autoExecute, String mode) {
+        return planStream(task, conversationId, autoExecute, mode, true);
+    }
+
+    public Flux<String> planStream(String task, String conversationId, boolean autoExecute, String mode, boolean memoryEnabled) {
         String resolvedConversationId = resolveConversationId(conversationId);
         return Flux.defer(() -> {
+            long startTime = System.currentTimeMillis();
             try {
-                String planJson = baseChatClient.prompt().system(planningSystemPrompt).user(task).call().content();
-                planJson = cleanJsonResponse(planJson);
+                String planJson = memoryEnabled
+                        ? memoryChatClient.prompt()
+                        .system(planningSystemPrompt)
+                        .user(task)
+                        .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, resolvedConversationId))
+                        .call()
+                        .content()
+                        : baseChatClient.prompt().system(planningSystemPrompt).user(task).call().content();
+                planJson = PlanningResponseBuilder.cleanJsonResponse(planJson);
                 JsonNode planNode = objectMapper.readTree(planJson);
+                boolean needPlanning = planNode.path("needPlanning").asBoolean(false);
+                if (!needPlanning) {
+                    return responseBuilder.streamDirectAnswer(task, resolvedConversationId, memoryEnabled, startTime);
+                }
+
                 JsonNode stepsNode = planNode.path("steps");
+                String taskSummary = planNode.path("taskSummary").asText("任务规划");
 
                 List<String> stepLines = new ArrayList<>();
                 for (JsonNode step : stepsNode) {
                     int num = step.path("stepNumber").asInt();
                     String desc = step.path("description").asText();
-                    stepLines.add("步骤" + num + ": " + desc);
+                    String tool = step.path("toolNeeded").asText("");
+                    String toolLabel = tool == null || tool.isBlank() || "null".equalsIgnoreCase(tool) ? "无工具" : tool;
+                    stepLines.add("步骤" + num + ": " + desc + " [" + toolLabel + "]");
                 }
                 if (stepLines.isEmpty()) {
-                    stepLines.add("直接执行任务");
+                    return responseBuilder.streamDirectAnswer(task, resolvedConversationId, memoryEnabled, startTime);
                 }
 
+                boolean planOnly = !autoExecute || "planning_only".equalsIgnoreCase(mode);
+                if (planOnly) {
+                    String planText = "任务总结: " + taskSummary + "\n" + String.join("\n", stepLines);
+                    return Flux.concat(
+                            Flux.just(StreamEvent.start("开始规划任务").toJson()),
+                            Flux.just(StreamEvent.delta(planText).toJson()),
+                            Flux.just(StreamEvent.done("规划完成").toJson())
+                    ).doFinally(signalType -> savePlanningStreamHistory(
+                            resolvedConversationId,
+                            task,
+                            planText,
+                            "planning-stream-only",
+                            startTime,
+                            signalType == reactor.core.publisher.SignalType.ON_COMPLETE ? "SUCCESS" : "FAILED"
+                    ));
+                }
+
+                JsonNode finalStepsNode = stepsNode;
+                StringBuilder finalAnswer = new StringBuilder();
+                String planText = "任务总结: " + taskSummary + "\n" + String.join("\n", stepLines) + "\n\n";
                 return Flux.concat(
                         Flux.just(StreamEvent.start("开始规划任务").toJson()),
-                        Flux.fromIterable(stepLines).map(s -> StreamEvent.delta(s).toJson()),
-                        Flux.just(StreamEvent.done("规划完成").toJson())
-                ).doOnComplete(() -> auditService.saveAgentInvocation(
+                        Flux.just(StreamEvent.delta(planText).toJson()),
+                        Flux.just(StreamEvent.delta("开始执行规划步骤...\n").toJson()),
+                        Flux.defer(() -> {
+                            List<StepResult> executedSteps = stepExecutor.executeSteps(finalStepsNode, resolvedConversationId);
+                            String finalPrompt = responseBuilder.buildFinalAnswerPrompt(task, executedSteps);
+                            Flux<String> answerFlux = baseChatClient.prompt()
+                                    .user(finalPrompt)
+                                    .stream()
+                                    .content()
+                                    .map(chunk -> {
+                                        finalAnswer.append(chunk);
+                                        return StreamEvent.delta(chunk).toJson();
+                                    });
+                            return Flux.concat(
+                                    Flux.just(StreamEvent.delta("执行完成，正在生成最终回答...\n").toJson()),
+                                    answerFlux,
+                                    Flux.just(StreamEvent.done("完成").toJson())
+                            );
+                        })
+                ).doFinally(signalType -> savePlanningStreamHistory(
                         resolvedConversationId,
-                        "planning-stream",
-                        modelConfig.getPrimaryModel(),
                         task,
-                        "streamed",
-                        null,
-                        "SUCCESS",
-                        0L));
+                        planText + finalAnswer,
+                        "planning-stream-execute",
+                        startTime,
+                        signalType == reactor.core.publisher.SignalType.ON_COMPLETE ? "SUCCESS" : "FAILED"
+                ));
             } catch (Exception e) {
                 log.error("规划流式失败", e);
                 return Flux.just(StreamEvent.error("规划失败: " + e.getMessage()).toJson());
@@ -103,25 +153,35 @@ public class PlanningAgent {
     }
 
     public PlanningResponse planAndExecute(String task, String conversationId, boolean autoExecute) {
+        return planAndExecute(task, conversationId, autoExecute, true);
+    }
+
+    @Auditable(agentType = "planning")
+    public PlanningResponse planAndExecute(String task, String conversationId, boolean autoExecute, boolean memoryEnabled) {
         final String resolvedConversationId = resolveConversationId(conversationId);
         long startTime = System.currentTimeMillis();
 
         log.info("PlanningAgent [{}] 收到任务: {}", resolvedConversationId, task);
 
-        String planJson = baseChatClient.prompt().system(planningSystemPrompt).user(task).call().content();
+        String planJson = memoryEnabled
+                ? memoryChatClient.prompt()
+                .system(planningSystemPrompt)
+                .user(task)
+                .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, resolvedConversationId))
+                .call()
+                .content()
+                : baseChatClient.prompt().system(planningSystemPrompt).user(task).call().content();
         log.debug("规划结果 JSON: {}", planJson);
 
         try {
-            planJson = cleanJsonResponse(planJson);
+            planJson = PlanningResponseBuilder.cleanJsonResponse(planJson);
             JsonNode planNode = objectMapper.readTree(planJson);
             boolean needPlanning = planNode.path("needPlanning").asBoolean(false);
 
             if (!needPlanning) {
                 String directAnswer = planNode.path("directAnswer").asText("无法解析回答");
                 long totalTime = System.currentTimeMillis() - startTime;
-                PlanningResponse response = PlanningResponse.builder().conversationId(resolvedConversationId).planned(false).directAnswer(directAnswer).totalTimeMs(totalTime).traceId(TraceContext.getTraceId()).build();
-                auditService.saveAgentInvocation(resolvedConversationId, "planning-direct", modelConfig.getPrimaryModel(), task, response.getDirectAnswer(), null, "SUCCESS", totalTime);
-                return response;
+                return PlanningResponse.builder().conversationId(resolvedConversationId).planned(false).directAnswer(directAnswer).totalTimeMs(totalTime).traceId(TraceContext.getTraceId()).build();
             }
 
             String taskSummary = planNode.path("taskSummary").asText("任务规划");
@@ -133,122 +193,43 @@ public class PlanningAgent {
                     planSteps.add(StepResult.builder().stepNumber(step.path("stepNumber").asInt()).description(step.path("description").asText()).toolUsed(step.path("toolNeeded").asText("无")).result("未执行").success(false).build());
                 }
                 long totalTime = System.currentTimeMillis() - startTime;
-                PlanningResponse response = PlanningResponse.builder().conversationId(resolvedConversationId).taskSummary(taskSummary).planned(true).steps(planSteps).finalAnswer("仅返回规划结果，共 " + planSteps.size() + " 个步骤。").totalTimeMs(totalTime).traceId(TraceContext.getTraceId()).build();
-                auditService.saveAgentInvocation(resolvedConversationId, "planning-only", modelConfig.getPrimaryModel(), task, response.getFinalAnswer(), null, "SUCCESS", totalTime);
-                return response;
+                return PlanningResponse.builder().conversationId(resolvedConversationId).taskSummary(taskSummary).planned(true).steps(planSteps).finalAnswer("仅返回规划结果，共 " + planSteps.size() + " 个步骤。").totalTimeMs(totalTime).traceId(TraceContext.getTraceId()).build();
             }
 
-            List<StepResult> executedSteps = executeSteps(stepsNode, resolvedConversationId);
-            String finalAnswer = generateFinalAnswer(task, executedSteps);
+            List<StepResult> executedSteps = stepExecutor.executeSteps(stepsNode, resolvedConversationId);
+            String finalAnswer = responseBuilder.generateFinalAnswer(task, executedSteps);
             long totalTime = System.currentTimeMillis() - startTime;
 
-            PlanningResponse response = PlanningResponse.builder().conversationId(resolvedConversationId).taskSummary(taskSummary).planned(true).steps(executedSteps).finalAnswer(finalAnswer).totalTimeMs(totalTime).traceId(TraceContext.getTraceId()).build();
-            auditService.saveAgentInvocation(resolvedConversationId, "planning-execute", modelConfig.getPrimaryModel(), task, response.getFinalAnswer(), null, "SUCCESS", totalTime);
-            return response;
+            return PlanningResponse.builder().conversationId(resolvedConversationId).taskSummary(taskSummary).planned(true).steps(executedSteps).finalAnswer(finalAnswer).totalTimeMs(totalTime).traceId(TraceContext.getTraceId()).build();
 
         } catch (Exception e) {
             log.error("任务规划解析失败，回退到直接执行模式", e);
-            return fallbackDirectExecution(task, resolvedConversationId, startTime);
+            return responseBuilder.fallbackDirectExecution(task, resolvedConversationId, startTime, memoryEnabled);
         }
-    }
-
-    private List<StepResult> executeSteps(JsonNode stepsNode, String conversationId) { /* unchanged */
-        List<StepResult> results = new ArrayList<>();
-        StringBuilder contextAccumulator = new StringBuilder();
-        for (JsonNode step : stepsNode) {
-            int stepNumber = step.path("stepNumber").asInt();
-            String description = step.path("description").asText();
-            String toolNeeded = step.path("toolNeeded").asText("无");
-            long stepStart = System.currentTimeMillis();
-            String stepResult;
-            boolean success;
-            try {
-                String stepPrompt = buildStepPrompt(description, contextAccumulator.toString());
-                if (toolNeeded != null && !toolNeeded.isBlank() && !toolNeeded.equals("null") && !toolNeeded.equals("无")) {
-                    stepResult = executeWithTools(stepPrompt, toolNeeded);
-                } else {
-                    stepResult = baseChatClient.prompt().user(stepPrompt).call().content();
-                }
-                success = true;
-            } catch (Exception e) {
-                stepResult = "步骤执行失败: " + e.getMessage();
-                success = false;
-            }
-            long stepTime = System.currentTimeMillis() - stepStart;
-            contextAccumulator.append("\n[步骤").append(stepNumber).append("结果]: ").append(stepResult);
-            results.add(StepResult.builder().stepNumber(stepNumber).description(description).toolUsed(toolNeeded).result(stepResult).success(success).timeMs(stepTime).build());
-        }
-        return results;
-    }
-
-    private String executeWithTools(String prompt, String toolName) {
-        return baseChatClient.prompt().user(prompt).tools(resolveTools(toolName)).call().content();
-    }
-
-    private Object[] resolveTools(String toolName) {
-        List<Object> tools = new ArrayList<>();
-        String name = toolName.toLowerCase().trim();
-        if (name.contains("datetime") || name.contains("time") || name.contains("date")) tools.add(dateTimeTool);
-        if (name.contains("calc") || name.contains("math") || name.contains("计算")) tools.add(calculatorTool);
-        if (name.contains("translate") || name.contains("翻译")) tools.add(translateTool);
-        if (name.contains("doc") || name.contains("file") || name.contains("文件")) tools.add(docParseTool);
-        if (name.contains("db") || name.contains("database") || name.contains("查询")) tools.add(dbQueryTool);
-        if (tools.isEmpty()) {
-            tools.add(dateTimeTool);
-            tools.add(calculatorTool);
-            tools.add(translateTool);
-            tools.add(docParseTool);
-            tools.add(dbQueryTool);
-        }
-        return tools.toArray();
-    }
-
-    private String buildStepPrompt(String stepDescription, String previousContext) {
-        StringBuilder sb = new StringBuilder();
-        if (!previousContext.isBlank()) sb.append("之前步骤的执行结果：\n").append(previousContext).append("\n\n");
-        sb.append("当前任务：").append(stepDescription);
-        sb.append("\n请执行上述任务并返回结果。");
-        return sb.toString();
-    }
-
-    private String generateFinalAnswer(String originalTask, List<StepResult> steps) {
-        StringBuilder context = new StringBuilder();
-        context.append("用户原始需求：").append(originalTask).append("\n\n");
-        context.append("各步骤执行结果：\n");
-        for (StepResult step : steps) {
-            context.append("步骤").append(step.getStepNumber()).append(": ").append(step.getDescription()).append("\n");
-            context.append("结果: ").append(step.getResult()).append("\n");
-            context.append("状态: ").append(step.isSuccess() ? "✅成功" : "❌失败").append("\n\n");
-        }
-        context.append("请基于以上所有步骤的执行结果，生成一个完整、连贯的最终回答给用户。");
-        return baseChatClient.prompt().user(context.toString()).call().content();
-    }
-
-    private PlanningResponse fallbackDirectExecution(String task, String conversationId, long startTime) {
-        String reply = fullAgentClient.prompt().user(task).tools(dateTimeTool, calculatorTool, translateTool, docParseTool, dbQueryTool).advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, conversationId)).call().content();
-        long totalTime = System.currentTimeMillis() - startTime;
-        PlanningResponse response = PlanningResponse.builder().conversationId(conversationId).planned(false).directAnswer(reply).finalAnswer(reply).totalTimeMs(totalTime).traceId(TraceContext.getTraceId()).build();
-        auditService.saveAgentInvocation(conversationId, "planning-fallback", modelConfig.getPrimaryModel(), task, response.getFinalAnswer(), null, "SUCCESS", totalTime);
-        return response;
-    }
-
-    private String cleanJsonResponse(String json) {
-        if (json == null) return "{}";
-        json = json.trim();
-        if (json.startsWith("```json")) {
-            json = json.substring(7);
-        } else if (json.startsWith("```")) {
-            json = json.substring(3);
-        }
-        if (json.endsWith("```")) {
-            json = json.substring(0, json.length() - 3);
-        }
-        return json.trim();
     }
 
     private String resolveConversationId(String conversationId) {
         if (conversationId == null || conversationId.isBlank()) return "plan-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         return conversationId;
+    }
+
+    private void savePlanningStreamHistory(String conversationId,
+                                           String task,
+                                           String reply,
+                                           String agentType,
+                                           long startTime,
+                                           String status) {
+        long totalTime = System.currentTimeMillis() - startTime;
+        String username = getCurrentUsername();
+        auditService.saveChatHistory(conversationId, username, "user", task, agentType, modelConfig.getPrimaryModel(), null, null, 0L);
+        auditService.saveChatHistory(conversationId, username, "assistant", reply == null ? "" : reply, agentType, modelConfig.getPrimaryModel(), null, null, totalTime);
+        auditService.saveAgentInvocation(conversationId, agentType, modelConfig.getPrimaryModel(), task, reply, null, status, totalTime);
+    }
+
+    private String getCurrentUsername() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth != null && auth.getName() != null && !"anonymousUser".equals(auth.getName())
+                ? auth.getName() : "anonymous";
     }
 
 }

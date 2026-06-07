@@ -46,4 +46,9 @@ public class ChatRequest {
      * 是否开启思考模式
      */
     private Boolean thinkingMode = false;
+
+    /**
+     * 是否启用会话记忆，默认开启
+     */
+    private Boolean memoryEnabled = true;
 }

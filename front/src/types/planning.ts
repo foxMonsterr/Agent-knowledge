@@ -17,10 +17,16 @@ export interface StepResult {
 export interface PlanningResponse {
   conversationId?: string
   taskSummary?: string
-  planned: boolean
+  planned?: boolean
   directAnswer?: string
   steps?: StepResult[]
   finalAnswer?: string
+  result?: string
+  reply?: string
+  answer?: string
   totalTimeMs?: number
   traceId?: string
+  model?: string
+  code?: number
+  message?: string
 }

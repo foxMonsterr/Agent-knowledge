@@ -1,5 +1,4 @@
 import request from '@/utils/request'
-import type { ApiResponse } from '@/types/auth'
 
 export interface AuditLogVO {
   traceId?: string
@@ -15,4 +14,4 @@ export interface AuditLogVO {
 }
 
 export const getAuditLogs = (conversationId?: string) =>
-  request.get<ApiResponse<AuditLogVO[]>>('/audit/logs', { params: conversationId ? { conversationId } : {} })
+  request.get<AuditLogVO[]>('/audit/logs', { params: conversationId ? { conversationId } : {} })

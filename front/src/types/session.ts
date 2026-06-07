@@ -1,6 +1,7 @@
 export interface SessionHistoryItem {
   role: string
   content: string
+  createdAt?: string
 }
 
 export interface ChatHistoryEntity {

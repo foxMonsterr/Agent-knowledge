@@ -114,11 +114,14 @@
               <el-form-item label="阈值">
                 <el-input-number v-model="form.similarityThreshold" :min="0" :max="1" :step="0.05" />
               </el-form-item>
+              <el-form-item label="Memory">
+                <el-switch v-model="form.memoryEnabled" active-text="开启" inactive-text="关闭" />
+              </el-form-item>
             </el-form>
 
             <div class="composer-actions">
               <el-button type="primary" :loading="loading.ask" @click="handleAsk">发送问题</el-button>
-              <el-button :disabled="loading.ask" @click="handleStopStream">停止生成</el-button>
+              <el-button :disabled="!loading.ask" @click="handleStopStream">停止生成</el-button>
               <el-button @click="handleClearConversation">清空会话</el-button>
             </div>
           </div>
@@ -173,7 +176,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles } from 'element-plus'
 import { deleteDocument, getKnowledgeStatus, listDocuments, loadDirectory, searchKnowledge, uploadDocument } from '@/api/knowledge'
 import type { KnowledgeDocumentVO, KnowledgeResponse, KnowledgeStatusResponse } from '@/types/knowledge'
-import { useSseStream } from '@/composables/useSseStream'
+import { useConversationStream } from '@/composables/useConversationStream'
 import { normalizeAnswer, normalizeSessionId } from '@/utils/chatNormalize'
 
 const loading = reactive({ ask: false, list: false, upload: false, dir: false })
@@ -186,7 +189,7 @@ const logs = ref<Array<{ id: string; type: 'request' | 'success' | 'error' | 'in
 const messages = ref<Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; meta: string }>>([])
 const chatBodyRef = ref<HTMLElement | null>(null)
 
-const { answer: liveAnswer, status: streamStatus, clear: clearStream, startFetchStream, stop: stopStream } = useSseStream()
+const { answer: liveAnswer, status: streamStatus, conversationId: streamConversationId, finalContent, clear: clearStream, start: startConversationStream, stop: stopStream } = useConversationStream()
 
 const form = reactive({
   question: '',
@@ -195,6 +198,7 @@ const form = reactive({
   topK: 5,
   similarityThreshold: 0.5,
   mode: 'auto' as 'auto' | 'manual' | 'search',
+  memoryEnabled: true,
 })
 
 const normalizedAnswer = computed(() => liveAnswer.value || normalizeAnswer(result.value, '-'))
@@ -296,15 +300,16 @@ const handleRefresh = async () => {
 }
 
 const handleAsk = async () => {
-  if (!form.question.trim()) {
+  const question = form.question.trim()
+  if (!question) {
     ElMessage.warning('请输入问题')
     return
   }
   loading.ask = true
   clearStream()
   result.value = null
-  const question = form.question.trim()
   const conversationId = form.conversationId.trim() || undefined
+  form.question = ''
   appendMessage('user', question, '用户')
   addLog('request', `知识库问答 mode=${form.mode}, conversationId=${conversationId || '-'}`)
 
@@ -323,21 +328,20 @@ const handleAsk = async () => {
       return
     }
 
-    await startFetchStream({
+    await startConversationStream({
       message: question,
       conversationId,
-      mode: 'knowledge',
-      endpoint: '/knowledge/stream',
-      query: {
-        topK: form.topK,
-        similarityThreshold: form.similarityThreshold,
-        manual: form.mode === 'manual',
-      },
+      agentType: 'rag',
+      mode: form.mode === 'manual' ? 'rag_manual' : 'rag',
+      topK: form.topK,
+      similarityThreshold: form.similarityThreshold,
+      memoryEnabled: form.memoryEnabled,
     })
 
-    const finalAnswer = liveAnswer.value
+    const finalAnswer = finalContent.value || liveAnswer.value
+    if (streamConversationId.value) form.conversationId = streamConversationId.value
     result.value = {
-      conversationId,
+      conversationId: streamConversationId.value || conversationId,
       answer: finalAnswer,
       sources: [],
       retrievedChunks: 0,

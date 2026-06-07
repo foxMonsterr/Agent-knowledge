@@ -47,10 +47,25 @@ function parseEventPayload(raw: string): StreamEventPayload {
   if (text === '[DONE]') return { type: 'done', raw }
 
   try {
-    const parsed = JSON.parse(text) as Partial<StreamEventPayload> & { event?: string; content?: string; message?: string; data?: string }
+    const parsed = JSON.parse(text) as Partial<StreamEventPayload> & { event?: string; content?: string; message?: string; data?: any }
     const eventType = parsed.type || (parsed.event as StreamEventPayload['type']) || 'delta'
-    const content = parsed.content || parsed.message || parsed.data || text
-    return { type: eventType, content, raw }
+    const data = parsed.data && typeof parsed.data === 'object' ? parsed.data : undefined
+    const content = parsed.content
+      || parsed.message
+      || data?.content
+      || data?.message
+      || (eventType === 'final_answer' ? data?.answer : undefined)
+      || (eventType === 'source' && data?.sources ? data.sources.map((item: any) => item.title || item).join('\n') : undefined)
+      || (typeof parsed.data === 'string' ? parsed.data : undefined)
+      || ''
+    return {
+      type: eventType as StreamEventPayload['type'],
+      content,
+      conversationId: parsed.conversationId,
+      traceId: parsed.traceId,
+      data: parsed.data,
+      raw,
+    }
   } catch {
     return { type: 'delta', content: text, raw }
   }
@@ -81,6 +96,7 @@ export function useSseStream() {
   }
 
   const emitEvent = (payload: StreamEventPayload) => {
+    if (payload.conversationId) conversationId.value = payload.conversationId
     switch (payload.type) {
       case 'start':
         answer.value = ''
@@ -88,6 +104,7 @@ export function useSseStream() {
         break
       case 'delta':
       case 'message':
+      case 'source':
         if (payload.content) {
           answer.value += payload.content
           addLog('assistant', payload.content)

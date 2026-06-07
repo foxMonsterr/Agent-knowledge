@@ -1,6 +1,7 @@
 package com.chat.myAgent.config;
 
 import com.chat.myAgent.auth.JwtAuthenticationFilter;
+import jakarta.servlet.DispatcherType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -32,6 +33,7 @@ public class SecurityConfig {
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/error").permitAll()
 
@@ -46,6 +48,12 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/agent/**").permitAll()
                         .requestMatchers("/api/v1/planning/**").permitAll()
                         .requestMatchers("/api/v1/stream/**").permitAll()
+
+                        // LearnAgent：个人学习知识库主入口，登录用户可访问自己的数据
+                        .requestMatchers("/api/v1/learn/**").authenticated()
+
+                        // 全局 Conversation 底座：登录用户访问自己的会话与流式输出
+                        .requestMatchers("/api/v1/conversations/**").authenticated()
 
                         // 静态资源与首页
                         .requestMatchers("/", "/index.html", "/css/**", "/js/**").permitAll()

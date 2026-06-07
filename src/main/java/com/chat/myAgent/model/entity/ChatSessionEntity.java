@@ -28,6 +28,9 @@ public class ChatSessionEntity {
     @Column(length = 200)
     private String title;
 
+    @Column(length = 50)
+    private String username;
+
     @Column(columnDefinition = "TEXT")
     private String summary;
 

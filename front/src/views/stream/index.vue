@@ -93,8 +93,10 @@
           @keydown.enter.exact.prevent="handleSend"
         />
         <div class="composer-actions">
+          <el-switch v-model="form.memoryEnabled" active-text="Memory" inactive-text="无记忆" />
           <el-button type="primary" :loading="streamState === 'streaming' || streamState === 'connecting'" @click="handleSend">发送</el-button>
           <el-button :disabled="!currentSessionId" @click="handleStop">停止</el-button>
+          <el-button :disabled="!currentSessionId" @click="handleClearMemory">清除 Memory</el-button>
           <el-button @click="handleClearMessages">清空当前线程</el-button>
         </div>
       </section>
@@ -129,12 +131,12 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
-import { exportSession, getSessionMessages, createSession, listSessions, renameSession } from '@/api/chat'
-import { clearSession } from '@/api/session'
+import { createSession, listSessions, renameSession, exportSession, getSessionMessages, clearSession } from '@/api/session'
+import { clearConversationMemory } from '@/api/conversation'
 import type { ChatMessageVO, SessionExportMessage, SessionVO } from '@/types/chat'
-import { useSseStream } from '@/composables/useSseStream'
+import { useConversationStream } from '@/composables/useConversationStream'
 
-const { status: streamStatus, stop, clear, answer: liveAnswer, startFetchStream } = useSseStream()
+const { status: streamStatus, stop, clear, answer: liveAnswer, conversationId, start: startConversationStream } = useConversationStream()
 
 const sessionFilter = ref('')
 const sessions = ref<SessionVO[]>([])
@@ -143,7 +145,7 @@ const currentSessionId = ref('')
 const logs = ref<Array<{ id: string; type: 'request' | 'success' | 'error' | 'info'; time: string; content: string }>>([])
 const logsCollapsed = ref(false)
 const chatBodyRef = ref<HTMLElement | null>(null)
-const form = reactive({ message: '' })
+const form = reactive({ message: '', memoryEnabled: true })
 
 const streamState = computed(() => streamStatus.value)
 const statusText = computed(() => (streamStatus.value === 'streaming' || streamStatus.value === 'connecting' ? '输出中' : '空闲'))
@@ -258,12 +260,14 @@ const handleSend = async () => {
   addLog('request', `基础对话流式请求会话=${currentSessionId.value}`)
 
   try {
-    await startFetchStream({
+    await startConversationStream({
       message: content,
       conversationId: currentSessionId.value,
-      mode: 'basic',
-      endpoint: '/stream/chat',
+      agentType: 'chat',
+      mode: 'chat',
+      memoryEnabled: form.memoryEnabled,
     })
+    if (conversationId.value) currentSessionId.value = conversationId.value
     addLog('success', '收到流式响应')
     await loadMessages(currentSessionId.value)
     liveAnswer.value = ''
@@ -277,6 +281,16 @@ const handleSend = async () => {
 const handleStop = () => {
   stop()
   addLog('info', '停止流式输出')
+}
+
+const handleClearMemory = async () => {
+  if (!currentSessionId.value) {
+    ElMessage.warning('请先选择会话')
+    return
+  }
+  await clearConversationMemory(currentSessionId.value)
+  addLog('success', `已清除 Memory: ${currentSessionId.value}`)
+  ElMessage.success('Memory 已清除，历史消息仍保留')
 }
 
 const handleClearMessages = () => {

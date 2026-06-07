@@ -15,9 +15,19 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @SpringBootApplication(scanBasePackages = "com.chat.myAgent")
 @SpringBootConfiguration
 @EnableScheduling
-@EnableJpaRepositories(basePackages = "com.chat.myAgent.repository")
-@EnableMongoRepositories(basePackages = "com.chat.myAgent.repository.mongo")
-@EntityScan(basePackages = "com.chat.myAgent.model.entity")
+@EnableJpaRepositories(basePackages = {
+        "com.chat.myAgent.repository",
+        "com.chat.myAgent.learn.repository.jpa"
+})
+@EnableMongoRepositories(basePackages = {
+        "com.chat.myAgent.repository.mongo",
+        "com.chat.myAgent.learn.repository.mongo",
+        "com.chat.myAgent.react.repository"
+})
+@EntityScan(basePackages = {
+        "com.chat.myAgent.model.entity",
+        "com.chat.myAgent.learn.model"
+})
 public class MainApplication
 {
     public static void main(String[] args)

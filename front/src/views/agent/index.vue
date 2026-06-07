@@ -21,6 +21,20 @@
                 <el-option label="指定工具" value="specific" />
               </el-select>
             </el-form-item>
+            <el-form-item label="ReAct">
+              <el-switch
+                v-model="form.thinkingMode"
+                active-text="思考链路"
+                inactive-text="普通"
+              />
+            </el-form-item>
+            <el-form-item label="Memory">
+              <el-switch
+                v-model="form.memoryEnabled"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+            </el-form-item>
             <el-form-item v-if="form.mode === 'specific'" label="tools">
               <el-select v-model="form.tools" multiple placeholder="请选择工具" style="width: 100%">
                 <el-option label="datetime" value="datetime" />
@@ -28,6 +42,11 @@
                 <el-option label="translate" value="translate" />
                 <el-option label="doc" value="doc" />
                 <el-option label="db" value="db" />
+                <el-option label="text" value="text" />
+                <el-option label="json" value="json" />
+                <el-option label="collection" value="collection" />
+                <el-option label="regex" value="regex" />
+                <el-option label="system" value="system" />
               </el-select>
             </el-form-item>
           </el-form>
@@ -48,7 +67,7 @@
                 <el-tag class="ml8" :type="statusTagType">{{ statusText }}</el-tag>
               </div>
               <div class="chat-header-meta">
-                <el-tag type="info" effect="plain">Session: {{ form.conversationId || '-' }}</el-tag>
+                <el-tag type="info" effect="plain">Conversation: {{ form.conversationId || '-' }}</el-tag>
               </div>
             </div>
           </template>
@@ -71,7 +90,7 @@
               <div class="message-avatar">AI</div>
               <div class="message-content">
                 <div class="message-meta">流式生成中</div>
-                <div class="message-text">{{ liveAnswer }}</div>
+                <div class="message-text">{{ displayLiveAnswer }}</div>
               </div>
             </div>
           </div>
@@ -122,7 +141,16 @@
       </el-col>
 
       <el-col :span="5" class="side-col">
-        <el-card shadow="never" class="panel-card right-panel">
+        <ReActChainPanel
+          v-if="form.thinkingMode"
+          class="right-panel"
+          title="Agent ReAct 链路"
+          :status="reactStatus"
+          :steps="reactSteps"
+          empty-text="开启 ReAct 后，这里会展示通用 Agent 的工具调用链路。"
+        />
+
+        <el-card v-else shadow="never" class="panel-card right-panel">
           <template #header>
             <div class="header">
               <span>请求日志</span>
@@ -149,7 +177,9 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { AgentMode, AgentResponse } from '@/types/agent'
 import { normalizeAnswer, normalizeSessionId } from '@/utils/chatNormalize'
-import { useSseStream } from '@/composables/useSseStream'
+import { stopAgentReAct } from '@/api/agent'
+import ReActChainPanel from '@/components/react/ReActChainPanel.vue'
+import { useConversationStream } from '@/composables/useConversationStream'
 
 const loading = ref(false)
 const response = ref<AgentResponse | null>(null)
@@ -157,15 +187,29 @@ const logs = ref<Array<{ id: string; type: 'request' | 'success' | 'error' | 'in
 const messages = ref<Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; meta: string }>>([])
 const chatBodyRef = ref<HTMLElement | null>(null)
 
-const { answer: liveAnswer, status: streamStatus, clear: clearStream, startFetchStream, stop: stopStream } = useSseStream()
-const streaming = computed(() => streamStatus.value === 'streaming' || streamStatus.value === 'connecting')
-
 const form = reactive({
   conversationId: '',
   message: '',
   mode: 'chat' as AgentMode,
   tools: [] as string[],
+  thinkingMode: false,
+  memoryEnabled: true,
 })
+
+const {
+  answer: liveAnswer,
+  status: streamStatus,
+  traceId,
+  conversationId,
+  steps: reactSteps,
+  isRunning: streaming,
+  clear: clearStream,
+  start: startConversationStream,
+  stop: stopConversationStream,
+} = useConversationStream()
+
+const reactStatus = computed(() => streamStatus.value)
+const displayLiveAnswer = computed(() => liveAnswer.value)
 
 const addLog = (type: 'request' | 'success' | 'error' | 'info', content: string) => {
   logs.value.unshift({ id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, type, time: new Date().toLocaleString(), content })
@@ -197,7 +241,7 @@ const tagType = (type: string) => {
 
 const statusText = computed(() => {
   if (loading.value) return '处理中'
-  if (streaming.value) return '流式中'
+  if (streaming.value) return form.thinkingMode ? 'ReAct 流式中' : '流式中'
   return '空闲'
 })
 const statusTagType = computed(() => {
@@ -205,35 +249,42 @@ const statusTagType = computed(() => {
   return 'success'
 })
 const normalizedReply = (value: AgentResponse | null) => normalizeAnswer(value || undefined, '-')
+const normalizedSessionId = normalizeSessionId
 
 const handleSend = async () => {
-  if (!form.message.trim()) {
+  const message = form.message.trim()
+  if (!message) {
     ElMessage.warning('请输入消息内容')
     return
   }
 
   loading.value = true
   clearStream()
-  appendMessage('user', form.message.trim(), 'Agent 请求')
+  form.message = ''
+  appendMessage('user', message, 'Agent 请求')
   response.value = null
   try {
-    addLog('request', `mode=${form.mode}, tools=${form.tools.join(',') || '-'}`)
-    await startFetchStream({
-      message: form.message.trim(),
+    addLog('request', `agentType=${form.thinkingMode ? 'general-react' : 'tool'}, mode=${form.thinkingMode ? 'react' : form.mode}, memory=${form.memoryEnabled}, tools=${form.tools.join(',') || '-'}`)
+    await startConversationStream({
+      message,
       conversationId: form.conversationId.trim() || undefined,
-      mode: 'agent',
-      endpoint: '/stream/chat/tools',
-      query: { mode: form.mode, tools: form.tools.join(',') || undefined },
+      agentType: form.thinkingMode ? 'general-react' : 'tool',
+      mode: form.thinkingMode ? 'react' : form.mode,
+      thinkingMode: form.thinkingMode,
+      tools: [...form.tools],
+      memoryEnabled: form.memoryEnabled,
     })
 
     const finalAnswer = liveAnswer.value
+    if (conversationId.value) form.conversationId = conversationId.value
     liveAnswer.value = ''
     response.value = {
-      conversationId: form.conversationId.trim() || undefined,
+      conversationId: conversationId.value || form.conversationId.trim() || undefined,
       reply: finalAnswer,
-      model: 'agent-stream',
-      agentType: 'tool',
-      traceId: '',
+      model: form.thinkingMode ? 'react-stream' : 'agent-stream',
+      agentType: form.thinkingMode ? 'general-react' : 'tool',
+      traceId: traceId.value,
+      thinking: form.thinkingMode ? reactSteps.value.map((step) => step.thought || step.actionName || step.observation || step.type).join('\n') : undefined,
     } as AgentResponse
     appendMessage('assistant', normalizedReply(response.value), `model: ${response.value?.model || '-'}`)
     addLog('success', '请求成功')
@@ -246,8 +297,14 @@ const handleSend = async () => {
 }
 
 const handleStopStream = () => {
-  stopStream()
-  addLog('info', '停止流式生成')
+  if (form.thinkingMode) {
+    if (traceId.value) void stopAgentReAct(traceId.value).catch(() => undefined)
+    stopConversationStream()
+    addLog('info', '停止 ReAct 流式生成')
+  } else {
+    stopConversationStream()
+    addLog('info', '停止流式生成')
+  }
 }
 
 const handleReset = () => {
@@ -255,6 +312,8 @@ const handleReset = () => {
   form.message = ''
   form.mode = 'chat'
   form.tools = []
+  form.thinkingMode = false
+  form.memoryEnabled = true
   response.value = null
   messages.value = []
   clearStream()
